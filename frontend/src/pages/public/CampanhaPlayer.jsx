@@ -1,0 +1,300 @@
+// src/pages/public/CampanhaPlayer.jsx
+import React, { useEffect, useState, useRef, useCallback } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
+import axios from "axios";
+
+export default function CampanhaPlayer() {
+  const { portalId } = useParams();
+  const [searchParams] = useSearchParams();
+
+  const mikrotikId = searchParams.get("mikrotik_id") || portalId;
+  const isPreview = searchParams.get("preview") === "1";
+
+  const [itens, setItens] = useState([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [progress, setProgress] = useState(0); // 0..1 for current item
+  const [loaded, setLoaded] = useState(false);
+  const [ended, setEnded] = useState(false);
+
+  const rafRef = useRef(null);
+  const startTimeRef = useRef(null);
+  const videoRef = useRef(null);
+
+  // Build destination URL preserving all original query params + campanha_vista=1
+  const buildRedirectUrl = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("campanha_vista", "1");
+    return `/hotspot/redirect/${mikrotikId}?${params.toString()}`;
+  }, [searchParams, mikrotikId]);
+
+  const doRedirect = useCallback(() => {
+    if (!isPreview) {
+      window.location.href = buildRedirectUrl();
+    } else {
+      setEnded(true);
+    }
+  }, [isPreview, buildRedirectUrl]);
+
+  // Advance to next item or end
+  const advance = useCallback((nextIndex) => {
+    setProgress(0);
+    startTimeRef.current = null;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    setCurrentIndex((prev) => {
+      const idx = nextIndex !== undefined ? nextIndex : prev + 1;
+      return idx;
+    });
+  }, []);
+
+  // On mount: fetch campanha
+  useEffect(() => {
+    axios
+      .get(`/api/public/campanha/${portalId}`)
+      .then((res) => {
+        const data = res.data?.data;
+        if (data && Array.isArray(data.itens) && data.itens.length > 0) {
+          const sorted = [...data.itens].sort((a, b) => a.ordem - b.ordem);
+          setItens(sorted);
+          setLoaded(true);
+
+          if (!isPreview) {
+            axios
+              .post(`/api/public/campanha/${portalId}/view`)
+              .catch(() => {});
+          }
+        } else {
+          window.location.href = buildRedirectUrl();
+        }
+      })
+      .catch(() => {
+        window.location.href = buildRedirectUrl();
+      });
+  }, [portalId, isPreview, buildRedirectUrl]);
+
+  // When currentIndex advances past the last item, redirect
+  useEffect(() => {
+    if (loaded && itens.length > 0 && currentIndex >= itens.length) {
+      doRedirect();
+    }
+  }, [currentIndex, itens.length, loaded, doRedirect]);
+
+  // RAF loop for image items
+  const startImageTimer = useCallback(
+    (duracaoMs) => {
+      startTimeRef.current = performance.now();
+
+      const tick = (now) => {
+        const elapsed = now - startTimeRef.current;
+        const p = Math.min(elapsed / duracaoMs, 1);
+        setProgress(p);
+
+        if (p < 1) {
+          rafRef.current = requestAnimationFrame(tick);
+        } else {
+          rafRef.current = null;
+          advance();
+        }
+      };
+
+      rafRef.current = requestAnimationFrame(tick);
+    },
+    [advance]
+  );
+
+  // Handle item change
+  useEffect(() => {
+    if (!loaded || itens.length === 0 || currentIndex >= itens.length) return;
+
+    const item = itens[currentIndex];
+    setProgress(0);
+    startTimeRef.current = null;
+
+    // Cancel any running RAF
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+
+    if (item.tipo === "imagem") {
+      const duracaoMs = (item.duracao_segundos || 5) * 1000;
+      startImageTimer(duracaoMs);
+    }
+    // For video, progress is driven by onTimeUpdate
+
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [currentIndex, itens, loaded, startImageTimer]);
+
+  // Click handler: left half = prev, right half = next
+  const handleClick = useCallback(
+    (e) => {
+      // Don't intercept clicks on "Saiba mais" button (stopPropagation handles it)
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const isLeft = x < rect.width / 2;
+
+      if (isLeft) {
+        // Go to previous or restart current
+        if (currentIndex === 0) {
+          // Restart current
+          setProgress(0);
+          startTimeRef.current = null;
+          if (rafRef.current) {
+            cancelAnimationFrame(rafRef.current);
+            rafRef.current = null;
+          }
+          const item = itens[0];
+          if (item.tipo === "imagem") {
+            startImageTimer((item.duracao_segundos || 5) * 1000);
+          } else if (videoRef.current) {
+            videoRef.current.currentTime = 0;
+            videoRef.current.play().catch(() => {});
+          }
+        } else {
+          advance(currentIndex - 1);
+        }
+      } else {
+        // Go to next or end
+        if (currentIndex >= itens.length - 1) {
+          doRedirect();
+        } else {
+          advance(currentIndex + 1);
+        }
+      }
+    },
+    [currentIndex, itens, advance, doRedirect, startImageTimer]
+  );
+
+  // Video event handlers
+  const handleVideoTimeUpdate = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !video.duration) return;
+    setProgress(video.currentTime / video.duration);
+  }, []);
+
+  const handleVideoEnded = useCallback(() => {
+    advance();
+  }, [advance]);
+
+  const handleVideoError = useCallback(() => {
+    advance();
+  }, [advance]);
+
+  const handleImageError = useCallback(() => {
+    advance();
+  }, [advance]);
+
+  if (!loaded) {
+    return (
+      <div className="fixed inset-0 bg-black flex items-center justify-center">
+        <div className="w-8 h-8 border-4 border-gray-600 border-t-white rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (ended) {
+    // Preview mode end screen
+    return (
+      <div className="fixed inset-0 bg-black flex items-center justify-center">
+        <div className="text-center text-white px-6">
+          <p className="text-2xl font-bold mb-2">Fim da pré-visualização</p>
+          <p className="text-gray-400 text-sm">
+            Em modo real, o usuário seria redirecionado ao portal.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (currentIndex >= itens.length) {
+    return (
+      <div className="fixed inset-0 bg-black" />
+    );
+  }
+
+  const item = itens[currentIndex];
+
+  return (
+    <div
+      className="fixed inset-0 bg-black select-none"
+      onClick={handleClick}
+      style={{ touchAction: "manipulation" }}
+    >
+      {/* Progress bar */}
+      <div className="absolute top-0 left-0 right-0 z-10 flex gap-1 px-2 pt-2">
+        {itens.map((_, idx) => {
+          let fill = 0;
+          if (idx < currentIndex) fill = 1;
+          else if (idx === currentIndex) fill = progress;
+          return (
+            <div
+              key={idx}
+              className="flex-1 h-1 rounded-full bg-white bg-opacity-30 overflow-hidden"
+            >
+              <div
+                className="h-full bg-white rounded-full"
+                style={{ width: `${fill * 100}%`, transition: "none" }}
+              />
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Media */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        {item.tipo === "imagem" ? (
+          <img
+            key={item.id}
+            src={item.arquivo_url}
+            alt={item.titulo || ""}
+            onError={handleImageError}
+            className="w-full h-full object-cover"
+            draggable={false}
+          />
+        ) : (
+          <video
+            key={item.id}
+            ref={videoRef}
+            src={item.arquivo_url}
+            autoPlay
+            muted
+            playsInline
+            onTimeUpdate={handleVideoTimeUpdate}
+            onEnded={handleVideoEnded}
+            onError={handleVideoError}
+            className="w-full h-full object-cover"
+          />
+        )}
+      </div>
+
+      {/* Bottom overlay: titulo + link */}
+      {(item.titulo || item.link_destino) && (
+        <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/70 to-transparent px-4 pb-6 pt-12">
+          {item.titulo && (
+            <p className="text-white text-base font-semibold mb-2 drop-shadow">
+              {item.titulo}
+            </p>
+          )}
+          {item.link_destino && (
+            <a
+              href={item.link_destino}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-block bg-white text-black text-sm font-semibold px-4 py-2 rounded-full shadow hover:bg-gray-100 active:bg-gray-200"
+            >
+              Saiba mais
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

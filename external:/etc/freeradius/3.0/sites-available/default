@@ -1,0 +1,84 @@
+server default {
+    listen {
+        type = auth
+        ipaddr = *
+        port = 1812
+    }
+    listen {
+        type = acct
+        ipaddr = *
+        port = 1813
+    }
+
+    authorize {
+        preprocess
+        chap
+        mschap
+        suffix
+        sql
+
+        # Contador total acumulado (reset=never) - calcula tempo total ja usado
+        # pelo usuario desde que foi cadastrado. Ajusta Session-Timeout
+        # automaticamente e rejeita quando Max-All-Session e excedido.
+        # Permite que o cliente use o tempo comprado ao longo de varias
+        # sessoes/dias ate esgotar. Apos esgotar, precisa refazer
+        # cadastro/pagamento (caminho normal do captive portal).
+        totalcounter
+
+        # Expiration check
+        expiration
+        logintime
+
+        pap
+    }
+
+    authenticate {
+        Auth-Type CHAP {
+            chap
+        }
+        Auth-Type MS-CHAP {
+            mschap
+        }
+        Auth-Type PAP {
+            pap
+        }
+    }
+
+    preacct {
+        preprocess
+        acct_unique
+        suffix
+        files
+    }
+
+    accounting {
+        sql
+        exec
+        attr_filter.accounting_response
+    }
+
+    # Sessao - verifica Simultaneous-Use via SQL
+    session {
+        sql
+    }
+
+    post-auth {
+        sql
+        exec
+        remove_reply_message_if_eap
+
+        Post-Auth-Type REJECT {
+            attr_filter.access_reject
+            sql
+            update reply {
+                Reply-Message := "Acesso negado"
+            }
+        }
+    }
+
+    pre-proxy {
+    }
+
+    post-proxy {
+    }
+}

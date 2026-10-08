@@ -1,0 +1,29 @@
+sqlcounter dailycounter {
+    sql_module_instance = sql
+    dialect = mysql
+
+    counter_name = Daily-Session-Time
+    check_name = Max-Daily-Session
+    reply_name = Session-Timeout
+
+    key = User-Name
+    reset = daily
+    cacheable = no
+
+    query = "SELECT IFNULL(SUM(IF(acctstoptime IS NULL, UNIX_TIMESTAMP() - UNIX_TIMESTAMP(acctstarttime), acctsessiontime)), 0) FROM radacct WHERE username='%{tolower:%{%{Stripped-User-Name}:-%{User-Name}}}' AND DATE(acctstarttime) = CURDATE()"
+}
+
+sqlcounter totalcounter {
+    sql_module_instance = sql
+    dialect = mysql
+
+    counter_name = Total-Session-Time
+    check_name = Max-All-Session
+    reply_name = Session-Timeout
+
+    key = User-Name
+    reset = never
+    cacheable = no
+
+    query = "SELECT IFNULL(SUM(IF(acctstoptime IS NULL, UNIX_TIMESTAMP() - UNIX_TIMESTAMP(acctstarttime), acctsessiontime)), 0) FROM radacct WHERE username='%{tolower:%{%{Stripped-User-Name}:-%{User-Name}}}'"
+}

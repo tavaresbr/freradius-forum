@@ -1,0 +1,96 @@
+.
+├── backend
+│   ├── db.js
+│   ├── .env
+│   ├── jobs
+│   │   ├── backup.sql
+│   │   ├── estrutura.sql
+│   │   └── verificaExpiracoes.js
+│   ├── middleware
+│   │   └── authMiddleware.js
+│   ├── mikrotik
+│   │   └── api.js
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── routes
+│   │   └── admin.js
+│   ├── server.js
+│   ├── src
+│   │   ├── config
+│   │   │   └── db.js
+│   │   ├── controllers
+│   │   │   ├── authController.js
+│   │   │   ├── dashboardController.js
+│   │   │   ├── lgpdController.js
+│   │   │   ├── mercadoPagoController.js
+│   │   │   ├── mikrotikAPIController.js
+│   │   │   ├── mikrotikController.js
+│   │   │   ├── pagamentoController.js
+│   │   │   ├── pagamentoController.js__
+│   │   │   ├── planController.js
+│   │   │   ├── planPublicController.js
+│   │   │   └── radiusController.js
+│   │   ├── middleware
+│   │   │   └── auth.js
+│   │   ├── models
+│   │   │   ├── Admin.js
+│   │   │   ├── ConfigMercadoPago.js
+│   │   │   ├── EfiConfig.js
+│   │   │   ├── Mikrotik.js
+│   │   │   └── Plan.js
+│   │   ├── routes
+│   │   │   ├── authRoutes.js
+│   │   │   ├── dashboardRoutes.js
+│   │   │   ├── efiRoutes.js
+│   │   │   ├── lgpdRoutes.js
+│   │   │   ├── mercadoPagoRoutes.js
+│   │   │   ├── mikrotikRoutes.js
+│   │   │   ├── pagamentoRoutes.js
+│   │   │   ├── planPublicRoutes.js
+│   │   │   ├── planRoutes.js
+│   │   │   └── radiusRoutes.js
+│   │   └── utils
+│   │       └── mikrotikClient.js
+│   └── user.js
+├── estrutura.txt
+└── frontend
+    ├── eslint.config.js
+    ├── .gitignore
+    ├── index.html
+    ├── package.json
+    ├── package-lock.json
+    ├── postcss.config.js
+    ├── public
+    │   ├── logo-forum.jpg
+    │   └── vite.svg
+    ├── README.md
+    ├── src
+    │   ├── App.css
+    │   ├── App.jsx
+    │   ├── assets
+    │   │   └── react.svg
+    │   ├── components
+    │   │   └── admin
+    │   │       ├── AdminLayout.jsx
+    │   │       ├── ConfiguracaoEfi.jsx
+    │   │       └── ConfiguracaoMercadoPago.jsx
+    │   ├── index.css
+    │   ├── main.jsx
+    │   └── pages
+    │       ├── admin
+    │       │   ├── Configuracoes.jsx
+    │       │   ├── Dashboard.jsx
+    │       │   ├── LgpdCadastros.jsx
+    │       │   ├── Login.jsx
+    │       │   ├── Mikrotiks.jsx
+    │       │   ├── Pagamentos.jsx
+    │       │   ├── Planos.jsx
+    │       │   └── UsuariosRadius.jsx
+    │       └── public
+    │           ├── LgpdAuto.jsx
+    │           ├── Pagamento.jsx
+    │           └── PlanosCliente.jsx
+    ├── tailwind.config.js
+    └── vite.config.js
+
+22 directories, 72 files

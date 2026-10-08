@@ -1,0 +1,38 @@
+# Ambiente
+backend/.env
+backend/certificados/*.pem
+backend/certificados/*.p12
+backend/tokens/
+
+# Node
+node_modules/
+frontend/dist/
+
+# WireGuard keys
+infra/wireguard/.wg-easy/
+
+# Credenciais
+hotspot-credenciais.txt
+
+# OS
+.DS_Store
+Thumbs.db
+.env
+**/.env
+node_modules/
+frontend/dist/
+backend/certificados/
+backend/tokens/
+backend/uploads/
+backups/
+cookies.txt
+*.key
+*.pem
+*.zip
+*.tar.gz
+*.master_bak
+*.sql
+.agent/
+.claude/
+infra/wireguard/docker-compose.yml
+backend/jobs/estrutura.sql.bak

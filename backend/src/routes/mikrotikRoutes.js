@@ -1,0 +1,705 @@
+const express = require("express")
+const router = express.Router()
+const db = require("../../db")
+const { getDriver } = require("../gateways");
+const { resolveHotspotHtmlDir } = require("../utils/hotspotSetup");
+const { obterInformacoes } = require("../controllers/mikrotikAPIController");
+const { exec } = require("child_process");
+
+// FreeRADIUS só lê NAS clients na inicialização, precisamos recarregar após mudanças
+function reloadFreeRADIUS() {
+  exec("systemctl restart freeradius", (err) => {
+    if (err) console.error("⚠️ Erro ao reiniciar FreeRADIUS:", err.message);
+    else console.log("✅ FreeRADIUS recarregado com novos NAS clients.");
+  });
+}
+console.log("DEBUG obterInformacoes:", typeof obterInformacoes);
+
+const TIPOS_GATEWAY = ["mikrotik", "omada", "unifi", "grandstream"];
+
+/**
+ * Valida e normaliza o body do cadastro/edicao de gateway por tipo.
+ * Retorna { erro } ou { dados } prontos pro INSERT/UPDATE.
+ *
+ * Regras por tipo:
+ *  - mikrotik: nome, ip, usuario, senha, porta (como sempre). Cria NAS (secret = senha).
+ *  - omada: nome, ip, senha (secret RADIUS) — SEMPRE External RADIUS (decisao
+ *    21/08/2026: modelo homologado; o portal nunca autoriza via API). Os campos
+ *    controller_url/api_user/api_pass sao gerenciados pelos endpoints
+ *    /:id/omada-api e servem SOMENTE pra capturar dados do controller (nomes
+ *    dos APs) — nunca sao tocados pelo POST/PUT normal.
+ *  - unifi: nome, ip, controller_url, api_user, api_pass. Sem NAS (API + polling,
+ *    accounting RADIUS do UniFi nao e' confiavel — ver UnifiDriver).
+ */
+function validarGateway(body) {
+  const tipo = TIPOS_GATEWAY.includes(body.tipo) ? body.tipo : "mikrotik";
+  const {
+    nome, ip, usuario, senha, porta, end_hotspot, portal_id,
+    controller_url, controller_site, omadac_id, api_user, api_pass, verify_tls,
+    gwn_api_key, gwn_api_secret, gwn_network_id,
+  } = body;
+
+  if (!nome || !ip) return { erro: "Nome e IP são obrigatórios." };
+
+  if (tipo === "mikrotik") {
+    if (!usuario || !senha || !porta) return { erro: "Usuário, senha e porta são obrigatórios para MikroTik." };
+  } else if (tipo === "omada") {
+    if (!senha) {
+      return { erro: "Informe o Secret RADIUS (o mesmo cadastrado no RADIUS Profile do Omada)." };
+    }
+  } else if (tipo === "unifi") {
+    if (!controller_url || !api_user || !api_pass) {
+      return { erro: "Controller URL, usuário e senha do admin local são obrigatórios para UniFi." };
+    }
+  } else if (tipo === "grandstream") {
+    // External RADIUS: so o secret e' obrigatorio. As chaves GWN Cloud sao
+    // opcionais (monitoramento online/offline).
+    if (!senha) {
+      return { erro: "Informe o Secret RADIUS (o mesmo cadastrado no RADIUS do controller GWN)." };
+    }
+  }
+
+  return {
+    dados: {
+      tipo,
+      nome,
+      ip,
+      usuario: usuario || null,
+      senha: senha || null,
+      porta: porta || null,
+      end_hotspot: end_hotspot || null,
+      portal_id: portal_id || null,
+      controller_url: controller_url || null,
+      controller_site: controller_site || null,
+      omadac_id: omadac_id || null,
+      api_user: api_user || null,
+      api_pass: api_pass || null,
+      verify_tls: verify_tls === undefined ? 1 : (Number(verify_tls) ? 1 : 0),
+      gwn_api_key: gwn_api_key || null,
+      gwn_api_secret: gwn_api_secret || null,
+      gwn_network_id: gwn_network_id || null,
+    },
+  };
+}
+
+/** Gateway usa FreeRADIUS (precisa de linha na tabela `nas`)? */
+function usaRadius(dados) {
+  // Omada e' SEMPRE External RADIUS — a API do controller (quando configurada
+  // via /:id/omada-api) e' so' captura de dados, nao muda o fluxo do portal.
+  // Grandstream tambem: External Web Portal + External RADIUS (o login_url do
+  // GWN valida no nosso FreeRADIUS).
+  return dados.tipo === "mikrotik" || dados.tipo === "omada" || dados.tipo === "grandstream";
+}
+
+/**
+ * Middleware: bloqueia endpoints que falam RouterOS API direto (scan, enviar-hotspot,
+ * enviar-login, enviar-status, info) quando o gateway nao e' MikroTik.
+ */
+async function somenteMikrotik(req, res, next) {
+  try {
+    const [[gw]] = await db.execute(
+      "SELECT tipo FROM mikrotiks WHERE id = ? AND empresa_id = ?",
+      [req.params.id, req.empresa_id]
+    );
+    if (!gw) return res.status(404).json({ message: "Gateway não encontrado." });
+    if (gw.tipo && gw.tipo !== "mikrotik") {
+      return res.status(400).json({ message: "Esta ação está disponível apenas para gateways MikroTik." });
+    }
+    next();
+  } catch (err) {
+    console.error("Erro no guard somenteMikrotik:", err);
+    res.status(500).json({ message: "Erro interno." });
+  }
+}
+
+// Criar Gateway (MikroTik / Omada / UniFi)
+router.post("/", async (req, res) => {
+  const { erro, dados } = validarGateway(req.body);
+  if (erro) {
+    console.log("⚠️ Validação de gateway falhou:", erro);
+    return res.status(400).json({ message: erro });
+  }
+
+  try {
+    // Verificar se já existe gateway com esse IP na empresa
+    const [existente] = await db.query("SELECT id FROM mikrotiks WHERE ip = ? AND empresa_id = ?", [dados.ip, req.empresa_id]);
+    if (existente.length > 0) {
+      return res.status(400).json({ message: "Já existe um gateway com este IP." });
+    }
+
+    if (usaRadius(dados)) {
+      // Verificar se já existe NAS com esse IP
+      const [nasExiste] = await db.query("SELECT id FROM nas WHERE nasname = ?", [dados.ip]);
+      if (nasExiste.length > 0) {
+        return res.status(400).json({ message: "Já existe um NAS com este IP." });
+      }
+    }
+
+    await db.execute(
+      `INSERT INTO mikrotiks
+        (empresa_id, nome, ip, usuario, senha, porta, end_hotspot, portal_id,
+         tipo, controller_url, controller_site, omadac_id, api_user, api_pass, verify_tls,
+         gwn_api_key, gwn_api_secret, gwn_network_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        req.empresa_id, dados.nome, dados.ip, dados.usuario, dados.senha, dados.porta,
+        dados.end_hotspot, dados.portal_id, dados.tipo, dados.controller_url,
+        dados.controller_site, dados.omadac_id, dados.api_user, dados.api_pass, dados.verify_tls,
+        dados.gwn_api_key, dados.gwn_api_secret, dados.gwn_network_id,
+      ]
+    );
+
+    if (usaRadius(dados)) {
+      // secret do NAS = campo senha (MikroTik: senha da API; Omada ext-RADIUS: secret RADIUS)
+      await db.execute(
+        "INSERT INTO nas (empresa_id, nasname, shortname, type, secret, description) VALUES (?, ?, ?, 'other', ?, 'RADIUS Client')",
+        [req.empresa_id, dados.ip, dados.nome, dados.senha]
+      );
+      reloadFreeRADIUS();
+    }
+
+    console.log(`✅ Gateway ${dados.tipo} cadastrado com sucesso.`);
+    res.status(201).json({ message: "Gateway cadastrado com sucesso." });
+
+  } catch (err) {
+    console.error("❌ Erro ao salvar gateway:", err);
+    res.status(500).json({ message: "Erro interno ao salvar gateway." });
+  }
+});
+
+
+router.get("/", async (req, res) => {
+  try {
+    const [rows] = await db.execute(`
+      SELECT m.*, p.nome as portal_nome, p.tipo as portal_tipo
+      FROM mikrotiks m LEFT JOIN portais p ON m.portal_id = p.id
+      WHERE m.empresa_id = ?
+      ORDER BY m.id DESC
+    `, [req.empresa_id]);
+    res.json(rows)
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar Mikrotiks." })
+  }
+})
+
+
+// Atualizar Gateway
+router.put("/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const [[atual]] = await db.execute("SELECT * FROM mikrotiks WHERE id = ? AND empresa_id = ?", [id, req.empresa_id]);
+    if (!atual) return res.status(404).json({ message: "Gateway não encontrado." });
+
+    // Tipo e' travado na edicao (mudar tipo deixaria NAS/portal em estado inconsistente)
+    const { erro, dados } = validarGateway({ ...req.body, tipo: atual.tipo || "mikrotik" });
+    if (erro) return res.status(400).json({ message: erro });
+
+    // Omada: os campos da API do controller sao gerenciados por /:id/omada-api —
+    // a edicao normal PRESERVA o que ja esta salvo (senao toda edicao apagaria
+    // a config de captura de nomes de APs).
+    if (atual.tipo === "omada") {
+      dados.controller_url = atual.controller_url;
+      dados.controller_site = dados.controller_site || atual.controller_site;
+      dados.omadac_id = atual.omadac_id;
+      dados.api_user = atual.api_user;
+      dados.api_pass = atual.api_pass;
+      dados.verify_tls = atual.verify_tls;
+    }
+
+    await db.execute(
+      `UPDATE mikrotiks SET
+         nome = ?, ip = ?, usuario = ?, senha = ?, porta = ?, end_hotspot = ?, portal_id = ?,
+         controller_url = ?, controller_site = ?, omadac_id = ?, api_user = ?, api_pass = ?, verify_tls = ?,
+         gwn_api_key = ?, gwn_api_secret = ?, gwn_network_id = ?
+       WHERE id = ? AND empresa_id = ?`,
+      [
+        dados.nome, dados.ip, dados.usuario, dados.senha, dados.porta, dados.end_hotspot, dados.portal_id,
+        dados.controller_url, dados.controller_site, dados.omadac_id, dados.api_user, dados.api_pass, dados.verify_tls,
+        dados.gwn_api_key, dados.gwn_api_secret, dados.gwn_network_id,
+        id, req.empresa_id,
+      ]
+    );
+
+    const ipAntigo = String(atual.ip || "").trim();
+    if (usaRadius(dados)) {
+      // Upsert do NAS pelo IP antigo (cobre troca de IP e gateway sem NAS previo)
+      const [upd] = await db.execute(
+        "UPDATE nas SET nasname = ?, shortname = ?, secret = ? WHERE nasname = ?",
+        [dados.ip, dados.nome, dados.senha, ipAntigo]
+      );
+      if (upd.affectedRows === 0) {
+        await db.execute(
+          "INSERT INTO nas (empresa_id, nasname, shortname, type, secret, description) VALUES (?, ?, ?, 'other', ?, 'RADIUS Client')",
+          [req.empresa_id, dados.ip, dados.nome, dados.senha]
+        );
+      }
+      reloadFreeRADIUS();
+    } else {
+      // Gateway que nao usa RADIUS (unifi / omada modo API): remove NAS orfao se existir
+      const [del] = await db.execute("DELETE FROM nas WHERE nasname = ?", [ipAntigo]);
+      if (del.affectedRows > 0) reloadFreeRADIUS();
+    }
+
+    res.json({ message: "Atualizado com sucesso." });
+  } catch (err) {
+    console.error("❌ Erro ao atualizar gateway/NAS:", err);
+    res.status(500).json({ message: "Erro ao atualizar gateway." });
+  }
+});
+
+
+// ============================================================================
+// API do controller Omada — SOMENTE captura de dados (nomes dos APs).
+// O portal continua 100% External RADIUS independente desta config.
+// ============================================================================
+const { descobrirInfo, sincronizarApsOmada } = require("../services/omadaApNames");
+
+async function buscarGatewayOmada(req, res) {
+  const [[gw]] = await db.execute(
+    "SELECT * FROM mikrotiks WHERE id = ? AND empresa_id = ?",
+    [req.params.id, req.empresa_id]
+  );
+  if (!gw) { res.status(404).json({ message: "Gateway não encontrado." }); return null; }
+  if (gw.tipo !== "omada") { res.status(400).json({ message: "Disponível apenas para gateways Omada." }); return null; }
+  return gw;
+}
+
+// Salvar config da API + testar + sincronizar APs
+router.put("/:id/omada-api", async (req, res) => {
+  try {
+    const gw = await buscarGatewayOmada(req, res);
+    if (!gw) return;
+
+    const controller_url = String(req.body.controller_url || "").trim().replace(/\/+$/, "");
+    const api_user = String(req.body.api_user || "").trim();
+    const api_pass = req.body.api_pass || "";
+    const verify_tls = Number(req.body.verify_tls) ? 1 : 0;
+    if (!controller_url || !api_user || !api_pass) {
+      return res.status(400).json({ message: "Informe URL do controller, usuário e senha do admin local." });
+    }
+
+    // Auto-descobre o omadacId (tambem valida que a URL e' mesmo um controller)
+    let info;
+    try {
+      info = await descobrirInfo(controller_url, verify_tls);
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
+    }
+
+    await db.execute(
+      `UPDATE mikrotiks SET controller_url = ?, omadac_id = ?, api_user = ?, api_pass = ?, verify_tls = ?
+       WHERE id = ? AND empresa_id = ?`,
+      [controller_url, info.omadacId, api_user, api_pass, verify_tls, gw.id, req.empresa_id]
+    );
+
+    // Testa login + sincroniza os nomes dos APs na hora
+    const [[gwAtualizado]] = await db.execute("SELECT * FROM mikrotiks WHERE id = ?", [gw.id]);
+    try {
+      const r = await sincronizarApsOmada(gwAtualizado);
+      res.json({
+        message: `API configurada. ${r.total} AP(s) sincronizados do site "${r.site}".`,
+        controller_ver: info.controllerVer,
+        ...r,
+      });
+    } catch (err) {
+      // Config salva mas sync falhou (ex.: credencial errada) — reporta claro
+      res.status(400).json({ message: `Config salva, mas a sincronização falhou: ${err.message}` });
+    }
+  } catch (err) {
+    console.error("Erro ao configurar API Omada:", err);
+    res.status(500).json({ message: "Erro interno ao configurar API do Omada." });
+  }
+});
+
+// Remover config da API (para de capturar; nomes ja importados permanecem)
+router.delete("/:id/omada-api", async (req, res) => {
+  try {
+    const gw = await buscarGatewayOmada(req, res);
+    if (!gw) return;
+    await db.execute(
+      `UPDATE mikrotiks SET controller_url = NULL, omadac_id = NULL, api_user = NULL, api_pass = NULL
+       WHERE id = ? AND empresa_id = ?`,
+      [gw.id, req.empresa_id]
+    );
+    res.json({ message: "API do controller removida. Os nomes de APs já importados foram mantidos." });
+  } catch (err) {
+    console.error("Erro ao remover API Omada:", err);
+    res.status(500).json({ message: "Erro interno ao remover API do Omada." });
+  }
+});
+
+// Sincronizar nomes dos APs agora (manual)
+router.post("/:id/sincronizar-aps", async (req, res) => {
+  try {
+    const gw = await buscarGatewayOmada(req, res);
+    if (!gw) return;
+    const r = await sincronizarApsOmada(gw);
+    res.json({ message: `${r.total} AP(s) sincronizados do site "${r.site}".`, ...r });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+// Deletar Mikrotik
+// Deletar Mikrotik e correspondente na tabela NAS
+router.delete("/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Buscar IP do Mikrotik
+    const [[mikrotik]] = await db.execute("SELECT ip FROM mikrotiks WHERE id = ? AND empresa_id = ?", [id, req.empresa_id]);
+    if (!mikrotik) return res.status(404).json({ message: "Mikrotik não encontrado." });
+
+    const ip = mikrotik.ip.trim();
+
+    // Deletar Mikrotik
+    await db.execute("DELETE FROM mikrotiks WHERE id = ? AND empresa_id = ?", [id, req.empresa_id]);
+
+    // Verificar se existe NAS com esse IP antes de tentar remover
+    const [nas] = await db.execute("SELECT id FROM nas WHERE nasname = ?", [ip]);
+    if (nas.length > 0) {
+      await db.execute("DELETE FROM nas WHERE nasname = ?", [ip]);
+      console.log(`✅ NAS com IP ${ip} removido.`);
+    } else {
+      console.warn(`⚠️ Nenhum NAS encontrado com IP ${ip}`);
+    }
+
+    reloadFreeRADIUS();
+    res.json({ message: "Removido com sucesso." });
+  } catch (err) {
+    console.error("❌ Erro ao deletar Mikrotik/NAS:", err);
+    res.status(500).json({ message: "Erro ao deletar Mikrotik." });
+  }
+});
+
+router.post("/:id/testar", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [[mikrotik]] = await db.execute("SELECT * FROM mikrotiks WHERE id = ? AND empresa_id = ?", [id, req.empresa_id]);
+    if (!mikrotik) return res.status(404).json({ message: "Mikrotik não encontrado" });
+
+    const resultado = await getDriver(mikrotik).testConnection(mikrotik);
+
+    if (resultado.sucesso) {
+      res.json({ status: "online", message: resultado.aviso || "Conexão bem-sucedida" });
+    } else {
+      res.status(400).json({ status: "offline", message: resultado.erro });
+    }
+  } catch (err) {
+    console.error("Erro ao testar Mikrotik:", err);
+    res.status(500).json({ message: "Erro interno ao testar Mikrotik" });
+  }
+});
+
+
+router.post("/:id/info", somenteMikrotik, obterInformacoes);
+
+// Escanear Mikrotik para obter interfaces, pools e IPs
+router.post("/:id/scan", somenteMikrotik, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [[mikrotik]] = await db.execute("SELECT * FROM mikrotiks WHERE id = ? AND empresa_id = ?", [id, req.empresa_id]);
+    if (!mikrotik) return res.status(404).json({ message: "Mikrotik não encontrado" });
+
+    const { RouterOSAPI } = require("node-routeros");
+    const conn = new RouterOSAPI({
+      host: mikrotik.ip,
+      user: mikrotik.usuario,
+      password: mikrotik.senha,
+      port: mikrotik.porta || 8728,
+      keepalive: false,
+      timeout: 10000,
+    });
+
+    await conn.connect();
+
+    // node-routeros !empty bug: Promise never resolves on empty lists
+    // Use Promise.race with timeout to handle this
+    const timedQuery = (path, timeoutMs = 3000) => {
+      return Promise.race([
+        conn.write(path).then(r => Array.isArray(r) ? r : []).catch(() => []),
+        new Promise(resolve => setTimeout(() => resolve([]), timeoutMs))
+      ]);
+    };
+
+    const result = { interfaces: [], pools: [], addresses: [], hotspots: [], profiles: [], radius: [] };
+
+    // Interfaces e addresses sempre existem
+    const interfaces = await timedQuery("/interface/print");
+    result.interfaces = interfaces.map(i => ({ name: i.name, type: i.type, disabled: i.disabled }));
+
+    const addresses = await timedQuery("/ip/address/print");
+    result.addresses = addresses.map(a => ({ address: a.address, interface: a.interface, network: a.network }));
+
+    // Pools, hotspot, profiles, radius podem estar vazios (!empty)
+    const pools = await timedQuery("/ip/pool/print");
+    result.pools = pools.map(p => ({ name: p.name, ranges: p.ranges }));
+
+    const hotspots = await timedQuery("/ip/hotspot/print");
+    result.hotspots = hotspots.map(h => ({ name: h.name, interface: h.interface, profile: h.profile }));
+
+    const profiles = await timedQuery("/ip/hotspot/profile/print");
+    result.profiles = profiles.map(p => ({ name: p.name }));
+
+    const radiusList = await timedQuery("/radius/print");
+    result.radius = radiusList.map(r => ({ address: r.address, service: r.service }));
+
+    try { await conn.close(); } catch (e) {}
+
+    res.json(result);
+  } catch (err) {
+    console.error("Erro ao escanear Mikrotik:", err.message);
+    res.status(500).json({ message: "Erro ao escanear: " + err.message });
+  }
+});
+
+// Enviar configuração completa de Hotspot para o Mikrotik (SSE - streaming de steps)
+router.post("/:id/enviar-hotspot", somenteMikrotik, async (req, res) => {
+  const { id } = req.params;
+  const config = req.body;
+
+  // Configurar SSE
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no", // Desabilitar buffering do Nginx
+  });
+
+  const sendEvent = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const [[mikrotik]] = await db.execute(
+      "SELECT * FROM mikrotiks WHERE id = ? AND empresa_id = ?",
+      [id, req.empresa_id]
+    );
+    if (!mikrotik) {
+      sendEvent({ type: "error", message: "Mikrotik não encontrado" });
+      res.end();
+      return;
+    }
+
+    let portal = null;
+    if (mikrotik.portal_id) {
+      const [[p]] = await db.execute("SELECT * FROM portais WHERE id = ?", [mikrotik.portal_id]);
+      portal = p;
+    }
+
+    const [[empresa]] = await db.execute("SELECT id, slug FROM empresas WHERE id = ?", [req.empresa_id]);
+
+    const systemDomain = req.headers.host?.replace(/:\d+$/, "") || process.env.SYSTEM_DOMAIN;
+    const { configurarHotspot } = require("../utils/hotspotSetup");
+
+    // Callback chamado a cada step - envia em tempo real via SSE
+    const onStep = (step) => {
+      sendEvent({ type: "step", ...step });
+    };
+
+    const result = await configurarHotspot(
+      mikrotik, portal, systemDomain.replace(/:\d+$/, ""), config, empresa || {}, onStep
+    );
+
+    // Atualizar end_hotspot
+    // IMPORTANTE: priorizar dnsName (DNS Name do Server Profile do hotspot) sobre o IP.
+    // O MikroTik usa esse DNS Name como destino dos redirects HTTP do captive portal.
+    // Quando salvamos o IP cru aqui, o cliente as vezes nao consegue logar (problema
+    // de redirect HTTPS sem cert valido para o IP). Usando o DNS Name, o redirect
+    // bate em algo que tem cert e roteamento certo.
+    const localAddr = config.localAddress || "10.5.50.1/24";
+    const gatewayIp = localAddr.split("/")[0];
+    const endHotspot = (config.dnsName && config.dnsName.trim()) || gatewayIp;
+    await db.execute(
+      "UPDATE mikrotiks SET end_hotspot = ? WHERE id = ? AND empresa_id = ?",
+      [endHotspot, id, req.empresa_id]
+    );
+
+    // Evento final
+    sendEvent({
+      type: "done",
+      success: result.success,
+      end_hotspot: endHotspot,
+    });
+  } catch (err) {
+    console.error("Erro ao enviar hotspot:", err);
+    sendEvent({ type: "error", message: "Erro interno: " + err.message });
+  }
+
+  res.end();
+});
+
+// Enviar apenas login.html para o Mikrotik (sem reconfigurar hotspot)
+router.post("/:id/enviar-login", somenteMikrotik, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [[mikrotik]] = await db.execute(
+      "SELECT * FROM mikrotiks WHERE id = ? AND empresa_id = ?",
+      [id, req.empresa_id]
+    );
+    if (!mikrotik) return res.status(404).json({ message: "Mikrotik não encontrado" });
+
+    const { RouterOSAPI } = require("node-routeros");
+    const conn = new RouterOSAPI({
+      host: mikrotik.ip,
+      user: mikrotik.usuario,
+      password: mikrotik.senha,
+      port: mikrotik.porta || 8728,
+      keepalive: false,
+      timeout: 20000,
+    });
+
+    await conn.connect();
+
+    const systemDomain = req.headers.host?.replace(/:\d+$/, "") || process.env.SYSTEM_DOMAIN;
+    const fetchUrl = `https://${systemDomain}/api/hotspot-login/${mikrotik.id}`;
+
+    const safeWrite = (path, args) => {
+      return Promise.race([
+        conn.write(path, args).catch(e => e.message),
+        new Promise(resolve => setTimeout(() => resolve("timeout"), 20000))
+      ]);
+    };
+
+    // Resolve html-directory real do profile ativo (fallback: "hotspot").
+    const htmlDir = await resolveHotspotHtmlDir(conn);
+    const dstPath = `${htmlDir}/login.html`;
+
+    let ok = false;
+    let mensagem = "";
+
+    // Tentar HTTPS
+    try {
+      const r = await safeWrite("/tool/fetch", [
+        `=url=${fetchUrl}`,
+        `=dst-path=${dstPath}`,
+        "=mode=https",
+        "=check-certificate=no",
+      ]);
+      if (r !== "timeout") {
+        ok = true;
+        mensagem = `login.html enviado em ${dstPath} (HTTPS)`;
+      }
+    } catch (e) { /* tenta HTTP */ }
+
+    // Fallback HTTP
+    if (!ok) {
+      try {
+        const r = await safeWrite("/tool/fetch", [
+          `=url=http://${systemDomain}/api/hotspot-login/${mikrotik.id}`,
+          `=dst-path=${dstPath}`,
+          "=mode=http",
+        ]);
+        if (r !== "timeout") {
+          ok = true;
+          mensagem = `login.html enviado em ${dstPath} (HTTP)`;
+        }
+      } catch (e) { /* fallback manual */ }
+    }
+
+    try { await conn.close(); } catch (e) {}
+
+    if (ok) {
+      res.json({ success: true, message: mensagem });
+    } else {
+      const [[empresa]] = await db.execute("SELECT id, slug FROM empresas WHERE id = ?", [req.empresa_id]);
+      const empresaId = empresa?.id || mikrotik.empresa_id || '';
+      const empresaSlug = empresa?.slug || 'default';
+      const fallbackUrl = `https://${systemDomain}/hotspot/redirect/${mikrotik.id}?mac=$(mac)&ip=$(ip)&mikrotik_id=${mikrotik.id}&empresa_id=${empresaId}&empresa=${empresaSlug}`;
+      res.status(207).json({
+        success: false,
+        message: `Não conseguiu baixar automaticamente. Substitua ${dstPath} manualmente com redirect para: ${fallbackUrl}`
+      });
+    }
+  } catch (err) {
+    console.error("Erro ao enviar login.html:", err.message);
+    res.status(500).json({ message: "Erro ao conectar: " + err.message });
+  }
+});
+
+// Enviar status.html para o Mikrotik (sem reconfigurar hotspot)
+router.post("/:id/enviar-status", somenteMikrotik, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [[mikrotik]] = await db.execute(
+      "SELECT * FROM mikrotiks WHERE id = ? AND empresa_id = ?",
+      [id, req.empresa_id]
+    );
+    if (!mikrotik) return res.status(404).json({ message: "Mikrotik não encontrado" });
+
+    const { RouterOSAPI } = require("node-routeros");
+    const conn = new RouterOSAPI({
+      host: mikrotik.ip,
+      user: mikrotik.usuario,
+      password: mikrotik.senha,
+      port: mikrotik.porta || 8728,
+      keepalive: false,
+      timeout: 20000,
+    });
+
+    await conn.connect();
+
+    const systemDomain = req.headers.host?.replace(/:\d+$/, "") || process.env.SYSTEM_DOMAIN;
+    const fetchUrl = `https://${systemDomain}/api/hotspot-status/${mikrotik.id}`;
+
+    const safeWrite = (path, args) => {
+      return Promise.race([
+        conn.write(path, args).catch(e => e.message),
+        new Promise(resolve => setTimeout(() => resolve("timeout"), 20000))
+      ]);
+    };
+
+    // Resolve html-directory real do profile ativo (fallback: "hotspot").
+    const htmlDir = await resolveHotspotHtmlDir(conn);
+    const dstPath = `${htmlDir}/status.html`;
+
+    let ok = false;
+    let mensagem = "";
+
+    // Tentar HTTPS
+    try {
+      const r = await safeWrite("/tool/fetch", [
+        `=url=${fetchUrl}`,
+        `=dst-path=${dstPath}`,
+        "=mode=https",
+        "=check-certificate=no",
+      ]);
+      if (r !== "timeout") {
+        ok = true;
+        mensagem = `status.html enviado em ${dstPath} (HTTPS)`;
+      }
+    } catch (e) { /* tenta HTTP */ }
+
+    // Fallback HTTP
+    if (!ok) {
+      try {
+        const r = await safeWrite("/tool/fetch", [
+          `=url=http://${systemDomain}/api/hotspot-status/${mikrotik.id}`,
+          `=dst-path=${dstPath}`,
+          "=mode=http",
+        ]);
+        if (r !== "timeout") {
+          ok = true;
+          mensagem = `status.html enviado em ${dstPath} (HTTP)`;
+        }
+      } catch (e) { /* fallback */ }
+    }
+
+    try { await conn.close(); } catch (e) {}
+
+    if (ok) {
+      res.json({ success: true, message: mensagem });
+    } else {
+      res.status(207).json({
+        success: false,
+        message: `Não conseguiu enviar ${dstPath} automaticamente. Baixe manualmente de: ${fetchUrl}`
+      });
+    }
+  } catch (err) {
+    console.error("Erro ao enviar status.html:", err.message);
+    res.status(500).json({ message: "Erro ao conectar: " + err.message });
+  }
+});
+
+module.exports = router

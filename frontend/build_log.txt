@@ -1,0 +1,9 @@
+
+> frontend@0.0.0 build
+> vite build
+
+vite v7.1.2 building for production...
+transforming...
+Browserslist: browsers data (caniuse-lite) is 7 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme

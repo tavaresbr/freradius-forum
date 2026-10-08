@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Restauracao de Emergencia - Hotspot</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f111a;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      padding: 24px 16px;
+    }
+
+    .container {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    .page-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+
+    .page-header .icon {
+      width: 48px;
+      height: 48px;
+      background: linear-gradient(135deg, #dc2626, #b91c1c);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .page-header h1 {
+      font-size: 22px;
+      font-weight: 700;
+      color: #f1f5f9;
+    }
+
+    .page-header p {
+      font-size: 13px;
+      color: #64748b;
+      margin-top: 2px;
+    }
+
+    .warning-box {
+      background: #1c0a0a;
+      border: 1px solid #7f1d1d;
+      border-left: 4px solid #dc2626;
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+
+    .warning-box .warn-icon {
+      color: #f87171;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .warning-box strong {
+      display: block;
+      color: #fca5a5;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+
+    .warning-box p {
+      color: #f87171;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .card {
+      background: #1a1d27;
+      border: 1px solid #2d3348;
+      border-radius: 14px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #f1f5f9;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+
+    .btn:hover:not(:disabled) { opacity: 0.85; transform: translateY(-1px); }
+    .btn:active:not(:disabled) { transform: translateY(0); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: #fff;
+    }
+
+    .btn-danger {
+      background: linear-gradient(135deg, #dc2626, #b91c1c);
+      color: #fff;
+    }
+
+    .btn-sm {
+      padding: 6px 14px;
+      font-size: 13px;
+    }
+
+    .backup-list {
+      list-style: none;
+    }
+
+    .backup-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 0;
+      border-bottom: 1px solid #232636;
+    }
+
+    .backup-item:last-child { border-bottom: none; }
+
+    .backup-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .backup-type {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      margin-bottom: 4px;
+    }
+
+    .badge-pre {
+      background: #1e3a5f;
+      color: #60a5fa;
+    }
+
+    .badge-manual {
+      background: #1a3a2a;
+      color: #4ade80;
+    }
+
+    .backup-date {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 2px;
+    }
+
+    .backup-update {
+      font-size: 11px;
+      color: #475569;
+      font-family: monospace;
+    }
+
+    .backup-size {
+      font-size: 12px;
+      color: #64748b;
+    }
+
+    .status-msg {
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .status-msg.show { display: flex; align-items: center; gap: 10px; }
+
+    .status-msg.loading {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #94a3b8;
+    }
+
+    .status-msg.success {
+      background: #052e16;
+      border: 1px solid #166534;
+      color: #86efac;
+    }
+
+    .status-msg.error {
+      background: #1c0a0a;
+      border: 1px solid #7f1d1d;
+      color: #f87171;
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid #475569;
+      border-top-color: #94a3b8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .empty-state {
+      text-align: center;
+      padding: 32px 0;
+      color: #475569;
+      font-size: 14px;
+    }
+
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #64748b;
+      text-decoration: none;
+      font-size: 13px;
+      margin-top: 24px;
+      transition: color 0.2s;
+    }
+
+    .back-link:hover { color: #94a3b8; }
+
+    .divider {
+      height: 1px;
+      background: #232636;
+      margin: 20px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div class="page-header">
+      <div class="icon">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Restauracao de Emergencia</h1>
+        <p>Acesso sem autenticacao para recuperacao do sistema</p>
+      </div>
+    </div>
+
+    <div class="warning-box">
+      <div class="warn-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </div>
+      <div>
+        <strong>Atencao: Esta operacao e irreversivel</strong>
+        <p>Restaurar um backup sobrescreve completamente o banco de dados e os arquivos do sistema com o estado do backup selecionado. Todos os dados criados apos o backup serao perdidos permanentemente. Use somente em caso de falha critica apos uma atualizacao.</p>
+      </div>
+    </div>
+
+    <!-- Criar Backup Manual -->
+    <div class="card">
+      <div class="card-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Criar Backup de Seguranca
+      </div>
+      <p style="font-size:13px;color:#64748b;margin-bottom:16px;">
+        Cria um snapshot completo do banco de dados e arquivos de configuracao neste momento.
+      </p>
+
+      <div id="backup-status" class="status-msg"></div>
+
+      <button class="btn btn-primary" id="btn-criar-backup" onclick="criarBackup()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Criar Backup Manual Agora
+      </button>
+    </div>
+
+    <!-- Lista de Backups -->
+    <div class="card">
+      <div class="card-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+          <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+        </svg>
+        Backups Disponiveis
+      </div>
+
+      <div id="restore-status" class="status-msg"></div>
+
+      <div id="backup-list-container">
+        <div class="empty-state">
+          <div class="spinner" style="margin:0 auto 12px;width:24px;height:24px;"></div>
+          Carregando backups...
+        </div>
+      </div>
+    </div>
+
+    <a href="/" class="back-link">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+      </svg>
+      Voltar para o login
+    </a>
+
+  </div>
+
+  <script>
+    const BASE = window.location.origin;
+
+    function formatDate(str) {
+      if (!str) return '—';
+      const d = new Date(str);
+      return d.toLocaleString('pt-BR', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      });
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return '0 B';
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(1024));
+      return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + sizes[i];
+    }
+
+    function showStatus(elId, type, message) {
+      const el = document.getElementById(elId);
+      el.className = 'status-msg show ' + type;
+      if (type === 'loading') {
+        el.innerHTML = '<div class="spinner"></div><span>' + message + '</span>';
+      } else if (type === 'success') {
+        el.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg><span>' + message + '</span>';
+      } else {
+        el.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg><span>' + message + '</span>';
+      }
+    }
+
+    function hideStatus(elId) {
+      const el = document.getElementById(elId);
+      el.className = 'status-msg';
+    }
+
+    async function carregarBackups() {
+      try {
+        const res = await fetch(BASE + '/api/emergency/backups');
+        const data = await res.json();
+
+        const container = document.getElementById('backup-list-container');
+
+        const backups = Array.isArray(data) ? data : (data.data || []);
+
+        if (!backups || backups.length === 0) {
+          container.innerHTML = '<div class="empty-state">Nenhum backup encontrado.</div>';
+          return;
+        }
+
+        let html = '<ul class="backup-list">';
+        backups.forEach(function(b) {
+          const isPreUpdate = b.tipo === 'pre_update' || b.tipo === 'pre_atualizacao' || b.tipo === 'pre-atualizacao';
+          const badgeClass = isPreUpdate ? 'badge-pre' : 'badge-manual';
+          const badgeLabel = isPreUpdate ? 'Pre-Atualizacao' : 'Manual';
+
+          const dbOk = b.db_exists !== false;
+          const filesOk = b.files_exists !== false;
+          const canRestore = dbOk && filesOk;
+
+          const disabledAttr = canRestore ? '' : 'disabled';
+          const disabledTitle = canRestore ? '' : 'title="Backup incompleto: arquivos faltando"';
+
+          const updateInfo = b.update_id
+            ? '<div class="backup-update">Update: ' + escapeHtml(String(b.update_id)) + '</div>'
+            : '';
+
+          const sizeInfo = b.tamanho_bytes
+            ? '<div class="backup-size">' + formatBytes(b.tamanho_bytes) + '</div>'
+            : '';
+
+          html += '<li class="backup-item">'
+            + '<div class="backup-info">'
+            + '<span class="backup-type ' + badgeClass + '">' + badgeLabel + '</span>'
+            + '<div class="backup-date">' + formatDate(b.criado_em || b.created_at) + '</div>'
+            + updateInfo
+            + '</div>'
+            + sizeInfo
+            + '<button class="btn btn-danger btn-sm" ' + disabledAttr + ' ' + disabledTitle
+            + ' onclick="restaurarBackup(' + b.id + ', \'' + escapeHtml(formatDate(b.criado_em || b.created_at)) + '\')">'
+            + 'Restaurar'
+            + '</button>'
+            + '</li>';
+        });
+        html += '</ul>';
+
+        container.innerHTML = html;
+      } catch (err) {
+        document.getElementById('backup-list-container').innerHTML =
+          '<div class="empty-state" style="color:#f87171;">Erro ao carregar backups: ' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    async function criarBackup() {
+      const btn = document.getElementById('btn-criar-backup');
+      btn.disabled = true;
+      showStatus('backup-status', 'loading', 'Criando backup, aguarde...');
+
+      try {
+        const res = await fetch(BASE + '/api/emergency/backup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tipo: 'manual' })
+        });
+        const data = await res.json();
+
+        if (res.ok && (data.success || data.id || data.backup)) {
+          showStatus('backup-status', 'success', 'Backup criado com sucesso!');
+          carregarBackups();
+        } else {
+          const msg = data.error || data.message || 'Erro desconhecido ao criar backup.';
+          showStatus('backup-status', 'error', 'Erro: ' + msg);
+        }
+      } catch (err) {
+        showStatus('backup-status', 'error', 'Falha na requisicao: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function restaurarBackup(id, dateStr) {
+      const confirmMsg = 'ATENCAO: Esta acao e IRREVERSIVEL.\n\n'
+        + 'O sistema sera restaurado para o estado do backup de:\n' + dateStr + '\n\n'
+        + 'Todos os dados posteriores a esse backup serao PERDIDOS.\n\n'
+        + 'Deseja continuar?';
+
+      if (!confirm(confirmMsg)) return;
+
+      showStatus('restore-status', 'loading', 'Restaurando backup... O sistema pode ficar indisponivel por alguns minutos.');
+
+      // Disable all restore buttons
+      document.querySelectorAll('.backup-item .btn-danger').forEach(function(b) {
+        b.disabled = true;
+      });
+
+      try {
+        const res = await fetch(BASE + '/api/emergency/restore/' + id, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+
+        if (res.ok && (data.success || data.message)) {
+          const msg = data.message || 'Backup restaurado com sucesso. O servidor esta reiniciando...';
+          showStatus('restore-status', 'success', msg);
+        } else {
+          const msg = data.error || data.message || 'Erro desconhecido ao restaurar backup.';
+          showStatus('restore-status', 'error', 'Erro: ' + msg);
+          // Re-enable buttons on failure
+          document.querySelectorAll('.backup-item .btn-danger').forEach(function(b) {
+            b.disabled = false;
+          });
+        }
+      } catch (err) {
+        showStatus('restore-status', 'error', 'Falha na requisicao: ' + err.message);
+        document.querySelectorAll('.backup-item .btn-danger').forEach(function(b) {
+          b.disabled = false;
+        });
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    // Load backups on page load
+    carregarBackups();
+  </script>
+</body>
+</html>
