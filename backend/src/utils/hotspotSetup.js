@@ -291,6 +291,8 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
       const dstLogin = `${htmlDir}/login.html`;
 
       let ok = false;
+      const motivos = [];
+      const motivo = (r, e) => e ? e.message : (r === "timeout" ? "timeout" : String(r));
 
       try {
         const r = await safeWrite("/tool/fetch", [
@@ -302,8 +304,10 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
         if (r !== "timeout") {
           addStep("login_page", "ok", `login.html baixado em ${dstLogin} (HTTPS)`);
           ok = true;
+        } else {
+          motivos.push(`HTTPS: ${motivo(r)}`);
         }
-      } catch (e) { /* tenta HTTP */ }
+      } catch (e) { motivos.push(`HTTPS: ${motivo(null, e)}`); /* tenta HTTP */ }
 
       if (!ok) {
         try {
@@ -315,14 +319,16 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
           if (r !== "timeout") {
             addStep("login_page", "ok", `login.html baixado em ${dstLogin} (HTTP)`);
             ok = true;
+          } else {
+            motivos.push(`HTTP: ${motivo(r)}`);
           }
-        } catch (e) { /* fallback manual */ }
+        } catch (e) { motivos.push(`HTTP: ${motivo(null, e)}`); /* fallback manual */ }
       }
 
       if (!ok) {
         const fullUrl = `https://${systemDomain}/hotspot/redirect/${mikrotik.id}?mac=$(mac)&ip=$(ip)&mikrotik_id=${mikrotik.id}&empresa_id=${empresaId}&empresa=${empresaSlug}`;
         addStep("login_page", "aviso",
-          `Nao conseguiu baixar automaticamente. Substitua ${dstLogin} manualmente com redirect para: ${fullUrl}`
+          `Nao conseguiu baixar automaticamente (${motivos.join(' | ') || 'sem detalhe'}). Verifique DNS/rota do MikroTik ate ${systemDomain}. Substitua ${dstLogin} manualmente com redirect para: ${fullUrl}`
         );
       }
     } catch (e) {
