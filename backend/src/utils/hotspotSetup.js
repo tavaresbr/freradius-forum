@@ -74,6 +74,17 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
     await conn.connect();
     addStep("conexao", "ok", `Conectado a ${mikrotik.ip}`);
 
+    // === 0. Interface nao pode ser porta de bridge (slave) ===
+    // IP/DHCP em porta de bridge ficam invalidos e o hotspot nao atende os clientes.
+    const bridgePorts = await safePrint("/interface/bridge/port/print");
+    const bp = bridgePorts.find(b => b.interface === ifName);
+    if (bp) {
+      addStep("interface", "erro",
+        `A interface ${ifName} e porta da bridge ${bp.bridge}. Remova-a da bridge (/interface bridge port remove) ou escolha outra interface livre.`);
+      try { await conn.close(); } catch (e) {}
+      return { success: false, steps, log: steps.map(s => `[${s.status}] ${s.message}`) };
+    }
+
     // === 1. IP na interface ===
     try {
       const addresses = await safePrint("/ip/address/print");
@@ -168,14 +179,26 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
         ]);
         addStep("hotspot", "ok", "Hotspot server atualizado");
       } else {
-        await safeWrite("/ip/hotspot/add", [
+        const r = await safeWrite("/ip/hotspot/add", [
           "=name=hotspot1",
           `=interface=${ifName}`,
           `=address-pool=${poolName}`,
           "=profile=hsprof-hotspot",
           "=disabled=no",
         ]);
-        addStep("hotspot", "ok", "Hotspot server criado");
+        if (r === "exists") {
+          // hotspot1 ja existia (print pode ter estourado o timeout): forcar interface correta
+          await safeWrite("/ip/hotspot/set", [
+            "=numbers=hotspot1",
+            `=interface=${ifName}`,
+            `=address-pool=${poolName}`,
+            "=profile=hsprof-hotspot",
+            "=disabled=no",
+          ]);
+          addStep("hotspot", "ok", `Hotspot server ja existia, atualizado para ${ifName}`);
+        } else {
+          addStep("hotspot", "ok", "Hotspot server criado");
+        }
       }
     } catch (e) {
       addStep("hotspot", "aviso", e.message);
