@@ -36,3 +36,12 @@ cookies.txt
 .claude/
 infra/wireguard/docker-compose.yml
 backend/jobs/estrutura.sql.bak
+
+# Editor / lixo
+*.swp
+*.swo
+*~
+*.bak
+*.log
+*__
+backend/jobs/backup.sql

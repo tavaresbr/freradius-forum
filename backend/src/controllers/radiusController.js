@@ -162,7 +162,7 @@ async function deletarUsuarioRadius(req, res) {
     await db.query('DELETE FROM radreply WHERE username = ?', [username]);
     await db.query('DELETE FROM radusergroup WHERE username = ?', [username]);
     await db.query('DELETE FROM radpostauth WHERE username = ?', [username]);
-    await db.query('DELETE FROM radius_users WHERE username = ?', [username]);
+    await db.query('DELETE FROM radius_users WHERE username = ? AND empresa_id = ?', [username, req.empresa_id]);
 
     res.status(200).json({ message: 'Usuário RADIUS deletado com sucesso.' });
   } catch (error) {
