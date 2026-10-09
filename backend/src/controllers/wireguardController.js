@@ -204,23 +204,68 @@ exports.getClientConfig = async (req, res) => {
 
     const pskLine = presharedKey ? ` preshared-key="${presharedKey}"` : '';
 
-    // Regra de firewall (chain input) liberando so o servidor da VPN (10.8.0.1).
-    // Idempotente (checa o comment) e no topo da chain; se a chain estiver vazia,
-    // place-before=0 falha e cai no add simples.
-    const regraFw = (comment, protocolo, portas) => {
-      const base = `/ip firewall filter add chain=input action=accept protocol=${protocolo} src-address=10.8.0.1 dst-port=${portas} comment="${comment}"`;
+    // Script pensado para roteador RESETADO sem configuracao padrao
+    // ("No Default Configuration"): nao ha bridge, DHCP client, DNS, NAT nem firewall.
+    // Deixa o equipamento com internet, VPN, API e Wi-Fi prontos, esperando so o
+    // wizard de Hotspot do painel. Cada linha e independente e idempotente (checa
+    // antes de criar), entao tambem pode ser colado de novo sem erro.
+    const WAN = "ether1";
+    const SSID = "Hotspot-WiFi";
+    const VPN_SERVER = "10.8.0.1";
+
+    // Cria so se nao existir nenhum item com esse comment.
+    const unicoPorComment = (menu, comment, cmdAdd) =>
+      `:if ([:len [${menu} find comment="${comment}"]]=0) do={ ${cmdAdd} comment="${comment}" }`;
+
+    // Regra accept no INICIO da chain input, so para o servidor da VPN.
+    // Se a chain estiver vazia, place-before=0 falha e cai no add simples.
+    const regraVpn = (comment, protocolo, portas) => {
+      const base = `/ip firewall filter add chain=input action=accept protocol=${protocolo} src-address=${VPN_SERVER} dst-port=${portas} comment="${comment}"`;
       return `:if ([:len [/ip firewall filter find comment="${comment}"]]=0) do={ :do { ${base} place-before=0 } on-error={ ${base} } }`;
     };
 
-    // Cada linha e um comando independente e idempotente: pode colar de novo sem erro.
+    // Regras base da chain input, adicionadas no FIM (a ordem de criacao e a ordem final).
+    const regraInput = (comment, extra) =>
+      unicoPorComment("/ip firewall filter", comment, `/ip firewall filter add chain=input ${extra}`);
+
     const routerOsScript = [
+      `# --- VPN WireGuard ---`,
       `:if ([:len [/interface wireguard find name=wg-hotspot]]=0) do={ /interface wireguard add listen-port=13231 mtu=1420 name=wg-hotspot private-key="${privKey}" }`,
       `:if ([:len [/interface wireguard peers find interface=wg-hotspot public-key="${pubKey}"]]=0) do={ /interface wireguard peers add allowed-address=10.8.0.0/24 endpoint-address=${settings.wgHost} endpoint-port=${settings.wgPort} interface=wg-hotspot public-key="${pubKey}"${pskLine} persistent-keepalive=25s }`,
       `:if ([:len [/ip address find address="${address}" interface=wg-hotspot]]=0) do={ /ip address add address=${address} interface=wg-hotspot }`,
-      regraFw("API do painel via VPN", "tcp", "8728"),
-      regraFw("CoA RADIUS via VPN", "udp", "3799"),
-      regraFw("Winbox/SSH via VPN", "tcp", "8291,22"),
-      `/ip service set api disabled=no address=10.8.0.0/24`,
+
+      `# --- Internet (${WAN}), DNS e hora ---`,
+      `:if ([:len [/ip dhcp-client find interface=${WAN}]]=0) do={ /ip dhcp-client add interface=${WAN} disabled=no use-peer-dns=yes add-default-route=yes comment="WAN" }`,
+      `/ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=yes`,
+      `/system clock set time-zone-name=America/Sao_Paulo`,
+      `/system ntp client set enabled=yes`,
+      `:if ([:len [/system ntp client servers find address="a.ntp.br"]]=0) do={ /system ntp client servers add address=a.ntp.br }`,
+      `:if ([:len [/system ntp client servers find address="b.ntp.br"]]=0) do={ /system ntp client servers add address=b.ntp.br }`,
+
+      `# --- NAT da saida de internet ---`,
+      unicoPorComment("/ip firewall nat", "Masquerade WAN", `/ip firewall nat add chain=srcnat out-interface=${WAN} action=masquerade`),
+
+      `# --- Firewall: protege o roteador pela WAN e libera so o servidor na VPN ---`,
+      regraInput("Aceita conexoes estabelecidas", "action=accept connection-state=established,related,untracked"),
+      regraInput("Descarta conexoes invalidas", "action=drop connection-state=invalid"),
+      regraInput("Aceita ICMP", "action=accept protocol=icmp"),
+      regraVpn("API do painel via VPN", "tcp", "8728"),
+      regraVpn("CoA RADIUS via VPN", "udp", "3799"),
+      regraVpn("Winbox/SSH via VPN", "tcp", "8291,22"),
+      regraInput("Bloqueia entrada pela WAN", `action=drop in-interface=${WAN}`),
+
+      `# --- Servicos: API so pela VPN; fecha os inseguros ---`,
+      `:do { /ip service set api disabled=no available-from=10.8.0.0/24 } on-error={ /ip service set api disabled=no address=10.8.0.0/24 }`,
+      `/ip service set telnet disabled=yes`,
+      `/ip service set ftp disabled=yes`,
+      `/ip service set www disabled=yes`,
+
+      `# --- Wi-Fi aberto (o portal cativo faz o controle de acesso) ---`,
+      `:do { /interface wireless set [find default-name=wlan1] mode=ap-bridge ssid="${SSID}" country=brazil frequency-mode=regulatory-domain disabled=no } on-error={ :put "Aviso: nao foi possivel configurar o Wi-Fi (wlan1)" }`,
+      `:do { /interface wireless set [find default-name=wlan1] band=2ghz-b/g/n } on-error={ }`,
+
+      `# --- Falta so: senha do admin e o wizard de Hotspot no painel ---`,
+      `:put "ATENCAO: defina a senha do admin com: /user set admin password=SUA_SENHA (use a mesma no cadastro do equipamento no painel)"`,
     ].join("\n");
 
     res.json({ conf, routerOsScript });

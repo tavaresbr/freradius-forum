@@ -328,7 +328,8 @@ export default function Wireguard() {
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-[#1a1d27] border border-gray-700 rounded-xl shadow-2xl w-full max-w-2xl p-6">
             <h3 className="text-xl font-bold text-white mb-2">Script de Instalação Rápida</h3>
-            <p className="text-gray-400 text-sm mb-4">Copie o código abaixo e cole no terminal (New Terminal) do seu Mikrotik. Ele conectará o Winbox/Mikrotik automaticamente à VPN deste servidor.</p>
+            <p className="text-gray-400 text-sm mb-2">Feito para um Mikrotik <strong>resetado com "No Default Configuration"</strong> (ether1 = internet). Copie o código abaixo e cole no terminal (New Terminal) do roteador. Ele configura internet (DHCP), DNS, NAT, firewall, hora, VPN deste servidor, API e Wi-Fi, e deixa o equipamento só aguardando o wizard de Hotspot.</p>
+            <p className="text-yellow-400 text-xs mb-4">Depois de colar: defina a senha do admin no roteador (<code>/user set admin password=...</code>) e use a mesma senha ao cadastrar o equipamento. Pode colar de novo sem erro.</p>
             
             <div className="bg-[#0d1117] rounded-lg p-4 relative group">
               <pre className="text-sm text-green-400 font-mono whitespace-pre-wrap rounded overflow-x-auto">
