@@ -427,7 +427,23 @@ router.post("/:id/scan", somenteMikrotik, async (req, res) => {
 
     // Interfaces e addresses sempre existem
     const interfaces = await timedQuery("/interface/print");
-    result.interfaces = interfaces.map(i => ({ name: i.name, type: i.type, disabled: i.disabled }));
+    // WAN (dhcp-client / pppoe / rota default) e portas de bridge nao servem para hotspot
+    const dhcpClients = await timedQuery("/ip/dhcp-client/print");
+    const pppoeClients = await timedQuery("/interface/pppoe-client/print");
+    const rotas = await timedQuery("/ip/route/print");
+    const bridgePorts = await timedQuery("/interface/bridge/port/print");
+    const wanIfs = new Set([
+      ...dhcpClients.map(d => d.interface),
+      ...pppoeClients.map(p => p.interface),
+      ...rotas
+        .filter(r => r["dst-address"] === "0.0.0.0/0")
+        .map(r => ((r["gateway-status"] || "").match(/via\s+(\S+)/) || [])[1] || r.gateway),
+    ].filter(Boolean));
+    const bridgeIfs = new Set(bridgePorts.map(b => b.interface));
+    result.interfaces = interfaces.map(i => ({
+      name: i.name, type: i.type, disabled: i.disabled,
+      wan: wanIfs.has(i.name), bridge: bridgeIfs.has(i.name),
+    }));
 
     const addresses = await timedQuery("/ip/address/print");
     result.addresses = addresses.map(a => ({ address: a.address, interface: a.interface, network: a.network }));

@@ -136,7 +136,8 @@ export default function Mikrotiks() {
       if (!res.ok) { alert(data.message); setShowWizard(false); return; }
       setScanData(data);
       if (data.interfaces?.length > 0) {
-        setWizardConfig(c => ({ ...c, interface: data.interfaces[0]?.name || "ether2" }));
+        const livre = data.interfaces.find(i => !i.wan && !i.bridge && i.disabled !== "true" && /^(ether|wlan|wifi)/.test(i.name));
+        setWizardConfig(c => ({ ...c, interface: livre?.name || "" }));
       }
       if (data.pools?.length > 0) {
         setWizardConfig(c => ({ ...c, poolName: data.pools[0].name, poolRange: data.pools[0].ranges }));
@@ -588,8 +589,8 @@ const carregarMikrotiks = async () => {
                     onChange={(e) => setWizardConfig({ ...wizardConfig, interface: e.target.value })}
                   >
                     {scanData.interfaces?.map(i => (
-                      <option key={i.name} value={i.name}>
-                        {i.name} ({i.type}){i.disabled === "true" ? " [desabilitada]" : ""}
+                      <option key={i.name} value={i.name} disabled={i.wan || i.bridge}>
+                        {i.name} ({i.type}){i.wan ? " [WAN - nao usar]" : ""}{i.bridge ? " [porta de bridge]" : ""}{i.disabled === "true" ? " [desabilitada]" : ""}
                       </option>
                     ))}
                   </select>
