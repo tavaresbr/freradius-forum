@@ -49,7 +49,7 @@ Sistema completo de gerenciamento de Hotspot WiFi com captive portal, autenticac
 │   ├── package.json
 │   ├── certificados/                # Certificados EFI PIX
 │   ├── tokens/                      # Armazenamento de tokens
-│   ├── migrations/                  # Migracoes incrementais (001-005)
+│   ├── migrations/                  # Migracoes incrementais (001-025)
 │   ├── jobs/
 │   │   └── estrutura.sql            # Schema completo do banco (dump)
 │   ├── src/
@@ -164,6 +164,7 @@ node migrations/002_leads.js           # Cria tabela leads
 node migrations/003_connection_logs.js # Cria tabela connection_logs
 node migrations/004_portal_templates.js # Cria portal_templates, adiciona colunas em portais
 node migrations/005_vpn_peers.js       # Cria empresa_vpn_peers
+# ... e assim por diante ate a 025 (rodar todas em ordem numerica: for f in migrations/[0-9][0-9][0-9]_*.js)
 ```
 
 ---
@@ -460,7 +461,7 @@ POST /api/radius/criar-usuario { username, password }
 -> INSERT radcheck (Cleartext-Password)
 -> INSERT radius_users (empresa_id, username)
 Depois: POST /api/radius/vincular-plano { username, plano_id }
--> INSERT radcheck (Max-Daily-Session, Simultaneous-Use)
+-> INSERT radcheck (Max-All-Session, Simultaneous-Use=1)
 -> INSERT radreply (Mikrotik-Rate-Limit, Session-Timeout)
 -> INSERT radusergroup (username, groupname=plano.id)
 -> UPDATE radius_users (plano_id, nas_id)
@@ -472,7 +473,7 @@ Webhook pagamento aprovado -> liberarUsuario()
 -> Busca CPF do lgpd_logins por MAC/IP
 -> Username = CPF ou MAC (se CPF nao existe)
 -> Password = username
--> INSERT radcheck (Cleartext-Password, Max-Daily-Session, Simultaneous-Use)
+-> INSERT radcheck (Cleartext-Password, Max-All-Session, Simultaneous-Use=1)
 -> INSERT radreply (Mikrotik-Rate-Limit, Session-Timeout)
 -> INSERT radusergroup (plano.id)
 -> INSERT radius_users (empresa_id)
@@ -598,7 +599,7 @@ empresas (1) ──── (N) radius_users ──── (1) planos
                         │                      │
                         ├── radcheck (N)       mikrotiks
                         │   ├── Cleartext-Password
-                        │   ├── Max-Daily-Session
+                        │   ├── Max-All-Session
                         │   └── Simultaneous-Use
                         │
                         ├── radreply (N)
@@ -627,7 +628,7 @@ pagamentos ──(MAC)── radacct/radius cleanup (verificaExpiracoes)
 |------|----------|-------|------------|---------|---------|
 | **Temporario (PIX)** | `pix_e{id}_{ts}_{rand}` | = username | 2M/2M fixo | 300s (5min) | Auto (verificaExpiracoes) |
 | **Permanente (Plano)** | CPF ou MAC | = username | Conforme plano | duracao_minutos | Expiracao pagamento |
-| **LGPD** | CPF ou MAC | = username | Conforme plano LGPD | duracao_minutos | Diaria (limpa sessoes do dia) |
+| **LGPD** | CPF ou MAC | = username | Conforme plano LGPD | duracao_minutos | Cumulativa (radacct zerado a cada nova liberacao) |
 | **Admin Manual** | Customizado | Customizada | Conforme plano vinculado | duracao_minutos | Manual |
 
 ---
@@ -660,7 +661,7 @@ pagamentos ──(MAC)── radacct/radius cleanup (verificaExpiracoes)
 │   └── ... (outros templates)
 ├── mods-enabled/
 │   ├── sql -> ../mods-available/sql             # Modulo SQL (MySQL)
-│   ├── sqlcounter             # CUSTOMIZADO - Contador diario (dailycounter)
+│   ├── sqlcounter             # CUSTOMIZADO - Contador cumulativo (totalcounter, reset=never)
 │   ├── pap, chap, mschap     # Metodos de autenticacao
 │   ├── expiration             # Verificacao de expiracao
 │   ├── logintime              # Controle de horario
@@ -692,7 +693,7 @@ server default {
         mschap
         suffix
         sql                    # Busca credenciais no MySQL (radcheck/radreply)
-        dailycounter           # Calcula tempo usado hoje (Max-Daily-Session)
+        totalcounter           # Soma tempo total usado (Max-All-Session, reset=never)
         expiration             # Verifica expiracao
         logintime              # Verifica horario de login
         pap                    # Autenticacao PAP
@@ -737,7 +738,7 @@ server default {
 **Pipeline de autenticacao:**
 ```
 Request -> preprocess -> chap -> mschap -> suffix -> sql (busca radcheck)
--> dailycounter (calcula tempo restante) -> expiration -> logintime -> pap
+-> totalcounter (calcula tempo restante) -> expiration -> logintime -> pap
 -> authenticate (PAP/CHAP/MS-CHAP) -> post-auth (log em radpostauth)
 -> Access-Accept com radreply (Mikrotik-Rate-Limit, Session-Timeout)
 ```
@@ -805,7 +806,7 @@ sql {
 - `delete_stale_sessions = yes` - Remove sessoes orfas do radacct
 - Mesmo usuario/senha do backend Node.js
 
-### SQL Counter - Dailycounter (mods-enabled/sqlcounter)
+### SQL Counter - Dailycounter (LEGADO, nao invocado; vigente: totalcounter, ver "Modelo de Tempo: CUMULATIVO")
 
 **Arquivo:** `/etc/freeradius/3.0/mods-enabled/sqlcounter`
 
@@ -844,7 +845,8 @@ sqlcounter dailycounter {
 **Arquivo:** `/etc/freeradius/3.0/dictionary`
 
 ```
-ATTRIBUTE   Max-Daily-Session     3001    integer
+ATTRIBUTE   Max-Daily-Session     3001    integer   # legado, nao usado
+ATTRIBUTE   Max-All-Session       3002    integer   # vigente
 ```
 
 - Atributo customizado `Max-Daily-Session` (ID 3001, tipo integer)
@@ -901,8 +903,8 @@ client localhost_ipv6 {
 2. MikroTik envia Access-Request (porta 1812) com:
    - User-Name, User-Password, Calling-Station-Id (MAC), NAS-IP-Address
 3. FreeRADIUS processa em authorize:
-   a. sql: SELECT radcheck WHERE username (Cleartext-Password, Max-Daily-Session, Simultaneous-Use)
-   b. dailycounter: Calcula tempo usado hoje, ajusta Session-Timeout
+   a. sql: SELECT radcheck WHERE username (Cleartext-Password, Max-All-Session, Simultaneous-Use)
+   b. totalcounter: Calcula tempo total usado, ajusta Session-Timeout
    c. pap: Compara senha
 4. Se autenticado -> Access-Accept com:
    - radreply: Mikrotik-Rate-Limit, Session-Timeout
