@@ -192,6 +192,20 @@ exports.deleteClient = async (req, res) => {
 exports.getClientConfig = async (req, res) => {
   try {
     const { id } = req.params;
+
+    // O retorno inclui a chave privada e a preshared do peer: so a empresa dona
+    // do peer pode le-las (mesma regra do deleteClient).
+    const [[peer]] = await db.execute(
+      "SELECT nome FROM empresa_vpn_peers WHERE wg_client_id = ? AND empresa_id = ?",
+      [id, req.empresa_id]
+    );
+    if (!peer) {
+      return res.status(403).json({ message: "Peer não pertence a esta empresa" });
+    }
+
+    // Nome do roteador = nome do peer (so letras, numeros, ponto, hifen e underline).
+    const nomeRoteador = String(peer.nome || "").replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+
     const settings = readComposeSettings();
     const conf = await makeRequest('GET', `/api/wireguard/client/${id}/configuration`);
     
@@ -229,6 +243,7 @@ exports.getClientConfig = async (req, res) => {
       unicoPorComment("/ip firewall filter", comment, `/ip firewall filter add chain=input ${extra}`);
 
     const routerOsScript = [
+      ...(nomeRoteador ? [`# --- Nome do roteador ---`, `/system identity set name="${nomeRoteador}"`] : []),
       `# --- VPN WireGuard ---`,
       `:if ([:len [/interface wireguard find name=wg-hotspot]]=0) do={ /interface wireguard add listen-port=13231 mtu=1420 name=wg-hotspot private-key="${privKey}" }`,
       `:if ([:len [/interface wireguard peers find interface=wg-hotspot public-key="${pubKey}"]]=0) do={ /interface wireguard peers add allowed-address=10.8.0.0/24 endpoint-address=${settings.wgHost} endpoint-port=${settings.wgPort} interface=wg-hotspot public-key="${pubKey}"${pskLine} persistent-keepalive=25s }`,
@@ -260,8 +275,8 @@ exports.getClientConfig = async (req, res) => {
       `/ip service set ftp disabled=yes`,
       `/ip service set www disabled=yes`,
 
-      `# --- Wi-Fi aberto (o portal cativo faz o controle de acesso) ---`,
-      `:do { /interface wireless set [find default-name=wlan1] mode=ap-bridge ssid="${SSID}" country=brazil frequency-mode=regulatory-domain disabled=no } on-error={ :put "Aviso: nao foi possivel configurar o Wi-Fi (wlan1)" }`,
+      `# --- Wi-Fi aberto, com clientes isolados entre si (o portal cativo controla o acesso) ---`,
+      `:do { /interface wireless set [find default-name=wlan1] mode=ap-bridge ssid="${SSID}" country=brazil frequency-mode=regulatory-domain default-forwarding=no disabled=no } on-error={ :put "Aviso: nao foi possivel configurar o Wi-Fi (wlan1)" }`,
       `:do { /interface wireless set [find default-name=wlan1] band=2ghz-b/g/n } on-error={ }`,
 
       `# --- Falta so: senha do admin e o wizard de Hotspot no painel ---`,
