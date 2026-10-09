@@ -85,6 +85,21 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
       return { success: false, steps, log: steps.map(s => `[${s.status}] ${s.message}`) };
     }
 
+    // === 0b. Interface nao pode ser a WAN (hotspot na uplink derruba a internet do roteador) ===
+    const dhcpClients = await safePrint("/ip/dhcp-client/print");
+    const pppoeClients = await safePrint("/interface/pppoe-client/print");
+    const rotas = await safePrint("/ip/route/print");
+    const ehWan = dhcpClients.some(d => d.interface === ifName)
+      || pppoeClients.some(p => p.interface === ifName)
+      || rotas.some(r => r["dst-address"] === "0.0.0.0/0"
+        && (((r["gateway-status"] || "").match(/via\s+(\S+)/) || [])[1] === ifName || r.gateway === ifName));
+    if (ehWan) {
+      addStep("interface", "erro",
+        `A interface ${ifName} e a WAN (uplink de internet) deste roteador. Escolha a interface da rede local/Wi-Fi.`);
+      try { await conn.close(); } catch (e) {}
+      return { success: false, steps, log: steps.map(s => `[${s.status}] ${s.message}`) };
+    }
+
     // === 1. IP na interface ===
     try {
       const addresses = await safePrint("/ip/address/print");
