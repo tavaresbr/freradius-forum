@@ -8,6 +8,7 @@ export default function Wireguard() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showScriptModal, setShowScriptModal] = useState(false);
   const [scriptData, setScriptData] = useState("");
+  const [scriptCopiado, setScriptCopiado] = useState(false);
   const [serverSettings, setServerSettings] = useState({ wgPort: '51820', wgHost: '92.113.34.197' });
   const [editSettings, setEditSettings] = useState({ wgPort: '', wgHost: '' });
   const [savingSettings, setSavingSettings] = useState(false);
@@ -107,9 +108,26 @@ export default function Wireguard() {
     }
   };
 
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(scriptData);
-    alert("Script copiado! Cole no terminal do Mikrotik.");
+  const copyToClipboard = async () => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(scriptData);
+      } else {
+        // Fallback para contextos sem Clipboard API (http, navegadores antigos)
+        const ta = document.createElement("textarea");
+        ta.value = scriptData;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setScriptCopiado(true);
+      setTimeout(() => setScriptCopiado(false), 2500);
+    } catch (err) {
+      alert("Não foi possível copiar automaticamente. Selecione o texto e copie com Ctrl+C.");
+    }
   };
 
   const formatBytes = (bytes) => {
@@ -325,27 +343,39 @@ export default function Wireguard() {
 
       {/* Script Modal */}
       {showScriptModal && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-[#1a1d27] border border-gray-700 rounded-xl shadow-2xl w-full max-w-2xl p-6">
-            <h3 className="text-xl font-bold text-white mb-2">Script de Instalação Rápida</h3>
-            <p className="text-gray-400 text-sm mb-2">Feito para um Mikrotik <strong>resetado com "No Default Configuration"</strong> (ether1 = internet). Copie o código abaixo e cole no terminal (New Terminal) do roteador. Ele configura internet (DHCP), DNS, NAT, firewall, hora, VPN deste servidor, API e Wi-Fi, e deixa o equipamento só aguardando o wizard de Hotspot.</p>
-            <p className="text-yellow-400 text-xs mb-4">Depois de colar: defina a senha do admin no roteador (<code>/user set admin password=...</code>) e use a mesma senha ao cadastrar o equipamento. Pode colar de novo sem erro.</p>
-            
-            <div className="bg-[#0d1117] rounded-lg p-4 relative group">
-              <pre className="text-sm text-green-400 font-mono whitespace-pre-wrap rounded overflow-x-auto">
-                {scriptData}
-              </pre>
-              <button 
-                onClick={copyToClipboard}
-                className="absolute top-2 right-2 bg-blue-600 hover:bg-blue-500 text-white p-2 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                title="Copiar Script"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
-              </button>
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm p-4">
+          <div className="bg-[#1a1d27] border border-gray-700 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col p-5">
+            <div className="flex items-start justify-between gap-4 mb-3">
+              <div>
+                <h3 className="text-lg font-bold text-white">Script de Instalação Rápida</h3>
+                <p className="text-gray-400 text-xs mt-1">
+                  Para um Mikrotik <strong>resetado com "No Default Configuration"</strong> (ether1 = internet). Cole no terminal (New Terminal) do roteador: configura internet, DNS, NAT, firewall, hora, VPN, API e Wi-Fi, e deixa só o wizard de Hotspot para o painel.
+                </p>
+              </div>
+              <button onClick={() => setShowScriptModal(false)} className="text-gray-400 hover:text-white text-2xl leading-none" title="Fechar">&times;</button>
             </div>
 
-            <div className="flex justify-end pt-6">
-              <button onClick={() => setShowScriptModal(false)} className="px-4 py-2 bg-gray-700 text-white rounded hover:bg-gray-600">Fechar</button>
+            <p className="text-yellow-400 text-xs mb-3">
+              Depois de colar: defina a senha do admin (<code>/user set admin password=...</code>) e use a mesma ao cadastrar o equipamento. Pode colar de novo sem erro.
+            </p>
+
+            <div className="bg-[#0d1117] rounded-lg border border-gray-800 overflow-auto min-h-0 flex-1 max-h-[50vh]">
+              <pre className="text-xs leading-relaxed text-green-400 font-mono whitespace-pre-wrap break-words p-3">
+                {scriptData}
+              </pre>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 pt-4">
+              <span className="text-gray-500 text-xs">{scriptData ? scriptData.split("\n").length : 0} linhas</span>
+              <div className="flex gap-2">
+                <button onClick={() => setShowScriptModal(false)} className="px-4 py-2 bg-gray-700 text-white rounded hover:bg-gray-600">Fechar</button>
+                <button
+                  onClick={copyToClipboard}
+                  className={`px-4 py-2 text-white rounded font-medium transition-colors ${scriptCopiado ? "bg-green-600 hover:bg-green-500" : "bg-blue-600 hover:bg-blue-500"}`}
+                >
+                  {scriptCopiado ? "Copiado!" : "Copiar script"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
