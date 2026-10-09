@@ -41,6 +41,9 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
 
   const PRINT_TIMEOUT = 3000;
   const WRITE_TIMEOUT = 10000;
+  // /tool/fetch conclui no roteador mas, em alguns modelos (hAP), a resposta da API
+  // demora ou nunca volta; por isso o resultado e confirmado em /file/print.
+  const FETCH_TIMEOUT = 20000;
 
   const safePrint = async (path) => {
     return Promise.race([
@@ -52,15 +55,31 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
     ]);
   };
 
-  const safeWrite = async (path, args) => {
+  const safeWrite = async (path, args, timeoutMs = WRITE_TIMEOUT) => {
     return Promise.race([
       conn.write(path, args).catch(e => {
         if (e.errno === "UNKNOWNREPLY") return "ok";
         if (e.message && e.message.includes("already")) return "exists";
         throw e;
       }),
-      new Promise(resolve => setTimeout(() => resolve("timeout"), WRITE_TIMEOUT))
+      new Promise(resolve => setTimeout(() => resolve("timeout"), timeoutMs))
     ]);
+  };
+
+  // Le um arquivo do roteador. Lista todos os arquivos (nunca vem vazia, entao nao
+  // sofre do !empty) e so pede o conteudo quando o arquivo existe.
+  const lerArquivo = async (caminho) => {
+    const lista = await Promise.race([
+      conn.write("/file/print", ["=.proplist=name,size,creation-time"]).then(r => Array.isArray(r) ? r : []).catch(() => []),
+      new Promise(resolve => setTimeout(() => resolve([]), 8000)),
+    ]);
+    const info = lista.find(f => f.name === caminho);
+    if (!info) return null;
+    const comConteudo = await Promise.race([
+      conn.write("/file/print", [`?name=${caminho}`, "=.proplist=name,contents"]).then(r => Array.isArray(r) ? r : []).catch(() => []),
+      new Promise(resolve => setTimeout(() => resolve([]), 8000)),
+    ]);
+    return { ...info, contents: (comConteudo[0] && comConteudo[0].contents) || "" };
   };
 
   const addStep = (name, status, message) => {
@@ -223,20 +242,21 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
     // Sem isso, quando o RADIUS retorna um groupname que nao existe como profile,
     // o MikroTik aplica o "default" que vem com address-pool=none de fabrica
     // e o login da "no address from ip pool" mesmo com Access-Accept.
+    // Altera pelo NOME ("default"), sem depender do print (que expira em hAP lento e
+    // fazia o wizard concluir, errado, que o perfil nao existia).
     try {
-      const profiles = await safePrint("/ip/hotspot/user/profile/print");
-      const defaultProf = profiles && profiles.find(p => p.name === "default");
-      if (defaultProf) {
-        await safeWrite("/ip/hotspot/user/profile/set", [
-          `=.id=${defaultProf[".id"]}`,
-          `=address-pool=${poolName}`,
-        ]);
-        addStep("user-profile", "ok", `User profile default apontando para ${poolName}`);
+      const r = await safeWrite("/ip/hotspot/user/profile/set", [
+        "=numbers=default",
+        `=address-pool=${poolName}`,
+      ]);
+      if (r === "timeout") {
+        addStep("user-profile", "aviso",
+          `Sem resposta ao ajustar o user profile default. Confirme no MikroTik: /ip hotspot user profile print (address-pool deve ser ${poolName})`);
       } else {
-        addStep("user-profile", "aviso", "User profile default nao encontrado");
+        addStep("user-profile", "ok", `User profile default apontando para ${poolName}`);
       }
     } catch (e) {
-      addStep("user-profile", "aviso", e.message);
+      addStep("user-profile", "aviso", `User profile default nao ajustado: ${e.message}. Ajuste: /ip hotspot user profile set [find name=default] address-pool=${poolName}`);
     }
 
     // === 6. RADIUS Client ===
@@ -332,15 +352,30 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
       const motivos = [];
       const motivo = (r, e) => e ? e.message : (r === "timeout" ? "timeout" : String(r));
 
+      // Estado do arquivo ANTES do download, para distinguir arquivo novo de sobra antiga.
+      const antes = await lerArquivo(dstLogin);
+
+      // Depois de um timeout, confere no roteador se o arquivo foi (re)gravado:
+      // o creation-time mudou ou o conteudo cita o ID deste equipamento.
+      const confirmarDownload = async () => {
+        const depois = await lerArquivo(dstLogin);
+        if (!depois || !(Number(depois.size) > 0)) return false;
+        if (!antes || depois["creation-time"] !== antes["creation-time"]) return true;
+        return new RegExp(`(redirect/|mikrotik_id=)${mikrotik.id}\\b`).test(depois.contents);
+      };
+
       try {
         const r = await safeWrite("/tool/fetch", [
           `=url=${fetchUrl}`,
           `=dst-path=${dstLogin}`,
           "=mode=https",
           "=check-certificate=no",
-        ]);
+        ], FETCH_TIMEOUT);
         if (r !== "timeout") {
           addStep("login_page", "ok", `login.html baixado em ${dstLogin} (HTTPS)`);
+          ok = true;
+        } else if (await confirmarDownload()) {
+          addStep("login_page", "ok", `login.html baixado em ${dstLogin} (HTTPS; confirmado no roteador)`);
           ok = true;
         } else {
           motivos.push(`HTTPS: ${motivo(r)}`);
@@ -353,9 +388,12 @@ async function configurarHotspot(mikrotik, portal, systemDomain, config = {}, em
             `=url=http://${systemDomain}/api/hotspot-login/${mikrotik.id}`,
             `=dst-path=${dstLogin}`,
             "=mode=http",
-          ]);
+          ], FETCH_TIMEOUT);
           if (r !== "timeout") {
             addStep("login_page", "ok", `login.html baixado em ${dstLogin} (HTTP)`);
+            ok = true;
+          } else if (await confirmarDownload()) {
+            addStep("login_page", "ok", `login.html baixado em ${dstLogin} (HTTP; confirmado no roteador)`);
             ok = true;
           } else {
             motivos.push(`HTTP: ${motivo(r)}`);
@@ -407,10 +445,23 @@ async function resolveHotspotHtmlDir(conn) {
     const profiles = await safePrint("/ip/hotspot/profile/print");
     const prof = Array.isArray(profiles) ? profiles.find(p => p.name === profileName) : null;
     const htmlDir = prof && prof["html-directory"];
-    return htmlDir && String(htmlDir).trim() ? String(htmlDir).trim() : "hotspot";
+    if (htmlDir && String(htmlDir).trim()) return String(htmlDir).trim();
+    return await dirPadraoPorArquivos(safePrint);
   } catch (e) {
     return "hotspot";
   }
+}
+
+// Se o profile nao pode ser lido (print expirou), decide pela estrutura de arquivos:
+// modelos com memoria flash (ex.: hAP) usam "flash/hotspot"; os demais, "hotspot".
+async function dirPadraoPorArquivos(safePrint) {
+  try {
+    const arquivos = await safePrint("/file/print", ["=.proplist=name"]);
+    if (Array.isArray(arquivos) && arquivos.some(f => String(f.name || "").startsWith("flash/hotspot"))) {
+      return "flash/hotspot";
+    }
+  } catch (e) { /* usa o padrao */ }
+  return "hotspot";
 }
 
 module.exports = { configurarHotspot, resolveHotspotHtmlDir };
