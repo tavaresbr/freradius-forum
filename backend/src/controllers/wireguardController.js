@@ -206,7 +206,8 @@ exports.getClientConfig = async (req, res) => {
 
     const routerOsScript = `/interface wireguard add listen-port=13231 mtu=1420 name=wg-hotspot private-key="${privKey}"
 /interface wireguard peers add allowed-address=10.8.0.0/24 endpoint-address=${settings.wgHost} endpoint-port=${settings.wgPort} interface=wg-hotspot public-key="${pubKey}"${pskLine} persistent-keepalive=25s
-/ip address add address=${address} interface=wg-hotspot`;
+/ip address add address=${address} interface=wg-hotspot
+:if ([:len [/ip firewall filter find comment="API do painel via VPN"]]=0) do={ :do { /ip firewall filter add chain=input action=accept protocol=tcp src-address=10.8.0.1 dst-port=8728 comment="API do painel via VPN" place-before=0 } on-error={ /ip firewall filter add chain=input action=accept protocol=tcp src-address=10.8.0.1 dst-port=8728 comment="API do painel via VPN" } }`;
 
     res.json({ conf, routerOsScript });
   } catch (err) {
