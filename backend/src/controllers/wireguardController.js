@@ -204,10 +204,24 @@ exports.getClientConfig = async (req, res) => {
 
     const pskLine = presharedKey ? ` preshared-key="${presharedKey}"` : '';
 
-    const routerOsScript = `/interface wireguard add listen-port=13231 mtu=1420 name=wg-hotspot private-key="${privKey}"
-/interface wireguard peers add allowed-address=10.8.0.0/24 endpoint-address=${settings.wgHost} endpoint-port=${settings.wgPort} interface=wg-hotspot public-key="${pubKey}"${pskLine} persistent-keepalive=25s
-/ip address add address=${address} interface=wg-hotspot
-:if ([:len [/ip firewall filter find comment="API do painel via VPN"]]=0) do={ :do { /ip firewall filter add chain=input action=accept protocol=tcp src-address=10.8.0.1 dst-port=8728 comment="API do painel via VPN" place-before=0 } on-error={ /ip firewall filter add chain=input action=accept protocol=tcp src-address=10.8.0.1 dst-port=8728 comment="API do painel via VPN" } }`;
+    // Regra de firewall (chain input) liberando so o servidor da VPN (10.8.0.1).
+    // Idempotente (checa o comment) e no topo da chain; se a chain estiver vazia,
+    // place-before=0 falha e cai no add simples.
+    const regraFw = (comment, protocolo, portas) => {
+      const base = `/ip firewall filter add chain=input action=accept protocol=${protocolo} src-address=10.8.0.1 dst-port=${portas} comment="${comment}"`;
+      return `:if ([:len [/ip firewall filter find comment="${comment}"]]=0) do={ :do { ${base} place-before=0 } on-error={ ${base} } }`;
+    };
+
+    // Cada linha e um comando independente e idempotente: pode colar de novo sem erro.
+    const routerOsScript = [
+      `:if ([:len [/interface wireguard find name=wg-hotspot]]=0) do={ /interface wireguard add listen-port=13231 mtu=1420 name=wg-hotspot private-key="${privKey}" }`,
+      `:if ([:len [/interface wireguard peers find interface=wg-hotspot public-key="${pubKey}"]]=0) do={ /interface wireguard peers add allowed-address=10.8.0.0/24 endpoint-address=${settings.wgHost} endpoint-port=${settings.wgPort} interface=wg-hotspot public-key="${pubKey}"${pskLine} persistent-keepalive=25s }`,
+      `:if ([:len [/ip address find address="${address}" interface=wg-hotspot]]=0) do={ /ip address add address=${address} interface=wg-hotspot }`,
+      regraFw("API do painel via VPN", "tcp", "8728"),
+      regraFw("CoA RADIUS via VPN", "udp", "3799"),
+      regraFw("Winbox/SSH via VPN", "tcp", "8291,22"),
+      `/ip service set api disabled=no address=10.8.0.0/24`,
+    ].join("\n");
 
     res.json({ conf, routerOsScript });
   } catch (err) {
