@@ -110,13 +110,14 @@ export default function Mikrotiks() {
   };
 
   // Wizard states
+  const DNS_NAME_PADRAO = "hotspot.minharede.com";
   const [showWizard, setShowWizard] = useState(false);
   const [wizardStep, setWizardStep] = useState(0);
   const [wizardMikrotikId, setWizardMikrotikId] = useState(null);
   const [scanData, setScanData] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [wizardConfig, setWizardConfig] = useState({
-    interface: "", localAddress: "10.5.50.1/24", poolName: "hs-pool", poolRange: "10.5.50.2-10.5.50.254", dnsName: ""
+    interface: "", localAddress: "10.5.50.1/24", poolName: "hs-pool", poolRange: "10.5.50.2-10.5.50.254", dnsName: DNS_NAME_PADRAO
   });
 
   const abrirWizard = async (id) => {
@@ -125,7 +126,7 @@ export default function Mikrotiks() {
     setScanData(null);
     setShowWizard(true);
     setWizardStep(0);
-    setWizardConfig({ interface: "", localAddress: "10.5.50.1/24", poolName: "hs-pool", poolRange: "10.5.50.2-10.5.50.254", dnsName: "" });
+    setWizardConfig({ interface: "", localAddress: "10.5.50.1/24", poolName: "hs-pool", poolRange: "10.5.50.2-10.5.50.254", dnsName: DNS_NAME_PADRAO });
 
     try {
       const res = await fetch(`/api/mikrotiks/${id}/scan`, {
